@@ -24,6 +24,7 @@ export type Database = {
           rest_seconds: number
           sets: number
           weight: number
+          set_plan: Json | null
           workout_id: string
         }
         Insert: {
@@ -35,6 +36,7 @@ export type Database = {
           rest_seconds?: number
           sets: number
           weight?: number
+          set_plan?: Json | null
           workout_id: string
         }
         Update: {
@@ -46,6 +48,7 @@ export type Database = {
           rest_seconds?: number
           sets?: number
           weight?: number
+          set_plan?: Json | null
           workout_id?: string
         }
         Relationships: [
@@ -131,6 +134,45 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      workout_templates: {
+        Row: {
+          created_at: string | null
+          description: string | null
+          duration_minutes: number | null
+          exercises: Json
+          id: string
+          intensity: string | null
+          muscle_groups: string[]
+          name: string
+          rest_seconds: number | null
+          slug: string
+        }
+        Insert: {
+          created_at?: string | null
+          description?: string | null
+          duration_minutes?: number | null
+          exercises: Json
+          id?: string
+          intensity?: string | null
+          muscle_groups: string[]
+          name: string
+          rest_seconds?: number | null
+          slug: string
+        }
+        Update: {
+          created_at?: string | null
+          description?: string | null
+          duration_minutes?: number | null
+          exercises?: Json
+          id?: string
+          intensity?: string | null
+          muscle_groups?: string[]
+          name?: string
+          rest_seconds?: number | null
+          slug?: string
+        }
+        Relationships: []
       }
       workouts: {
         Row: {

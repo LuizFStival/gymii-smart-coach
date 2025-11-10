@@ -3,10 +3,12 @@ import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Plus, Play } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import ExerciseDialog from "@/components/ExerciseDialog";
 import ExerciseCard from "@/components/ExerciseCard";
+import { formatMuscleGroupLabel, muscleGroupsFromString } from "@/lib/training";
 
 interface Exercise {
   id: string;
@@ -16,6 +18,7 @@ interface Exercise {
   weight: number;
   rest_seconds: number;
   order_index: number;
+  set_plan?: unknown;
 }
 
 const WorkoutDetail = () => {
@@ -134,7 +137,16 @@ const WorkoutDetail = () => {
             </Button>
             <div>
               <h1 className="text-2xl font-bold">{workout?.name}</h1>
-              <p className="text-sm text-muted-foreground">{workout?.muscle_group}</p>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {muscleGroupsFromString(workout?.muscle_group).map((group) => {
+                  const label = formatMuscleGroupLabel(group);
+                  return (
+                    <Badge key={group} variant="outline">
+                      {label}
+                    </Badge>
+                  );
+                })}
+              </div>
             </div>
           </div>
           <Button

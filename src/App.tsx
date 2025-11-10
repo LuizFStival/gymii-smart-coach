@@ -9,6 +9,7 @@ import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
 import Workouts from "./pages/Workouts";
 import WorkoutDetail from "./pages/WorkoutDetail";
+import WorkoutSession from "./pages/WorkoutSession";
 import Profile from "./pages/Profile";
 import Progress from "./pages/Progress";
 
@@ -26,6 +27,7 @@ const App = () => (
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/workouts" element={<Workouts />} />
           <Route path="/workout/:id" element={<WorkoutDetail />} />
+          <Route path="/execute/:id" element={<WorkoutSession />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="/progress" element={<Progress />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

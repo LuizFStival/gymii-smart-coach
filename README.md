@@ -1,73 +1,75 @@
-# Welcome to your Lovable project
+# GYMii Smart Coach
 
-## Project info
+Aplicativo web em React para organizar treinos, acompanhar evolução e importar templates prontos a partir de uma instância Supabase.
 
-**URL**: https://lovable.dev/projects/b07065bc-4042-406a-a35f-d28bdee1afce
+## Requisitos
 
-## How can I edit this code?
+- Node.js 18 ou superior
+- npm 9+
+- Supabase CLI (opcional, mas recomendado) – `npm i -g supabase` ou [instalação oficial](https://supabase.com/docs/guides/cli#installing)
 
-There are several ways of editing your application.
+## Configuração local
 
-**Use Lovable**
+1. Instale as dependências:
+   ```sh
+   npm install
+   ```
+2. Crie um arquivo `.env` na raiz do projeto e preencha com as chaves do seu projeto Supabase:
+   ```env
+   VITE_SUPABASE_URL="https://<seu-projeto>.supabase.co"
+   VITE_SUPABASE_PUBLISHABLE_KEY="<public-anon-key>"
+   ```
+3. Inicie o servidor de desenvolvimento:
+   ```sh
+   npm run dev
+   ```
+4. Acesse `http://localhost:5173` (ou a porta exibida no terminal).
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/b07065bc-4042-406a-a35f-d28bdee1afce) and start prompting.
+## Vinculando à Supabase
 
-Changes made via Lovable will be committed automatically to this repo.
+1. Faça login no Supabase CLI usando o token da sua conta:
+   ```sh
+   supabase login
+   ```
+2. Vincule o diretório atual ao projeto existente (substitua o ID pelo seu):
+   ```sh
+   supabase link --project-ref ilbqxysgnsxkvluvxkon
+   ```
+3. Aplique o esquema/migrations ao banco remoto:
+   ```sh
+   supabase db push
+   ```
+   Isso cria as tabelas `profiles`, `workouts`, `exercises`, `workout_templates` e garante as colunas opcionais (como `set_plan`) que o front-end consome.
+4. Se precisar rodar as seeds localmente, use:
+   ```sh
+   supabase db reset
+   ```
+   > Atenção: o comando acima apaga dados locais; não use em produção.
 
-**Use your preferred IDE**
+## Execução de build e deploy
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+- Build de produção:
+  ```sh
+  npm run build
+  ```
+- Visualizar a build:
+  ```sh
+  npm run preview
+  ```
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+Ao publicar em ambientes estáticos (GitHub Pages, Netlify, Vercel), garanta que as variáveis `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` estejam configuradas no ambiente de build. Para o GitHub Pages, defina a opção `base` no `vite.config.ts` conforme o caminho do repositório antes de executar o build.
 
-Follow these steps:
+## Estrutura de pastas
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+- `src/` – código fonte do front-end em React + TypeScript
+- `src/components/WorkoutDialog.tsx` – diálogo para criar/editar treinos
+- `src/pages/Workouts.tsx` – tela principal de listagem, importação e gerenciamento dos treinos
+- `src/lib/training.ts` – utilidades para interpretar planos de treino e template
+- `supabase/migrations/` – esquema do banco e seed do template base
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+## Scripts úteis
 
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
-```
-
-**Edit a file directly in GitHub**
-
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
-
-**Use GitHub Codespaces**
-
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-## What technologies are used for this project?
-
-This project is built with:
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/b07065bc-4042-406a-a35f-d28bdee1afce) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+- `npm run dev` – ambiente de desenvolvimento com Vite
+- `npm run build` – build de produção
+- `npm run preview` – serve os arquivos gerados em `dist/`
+- `npm run lint` – validação com ESLint

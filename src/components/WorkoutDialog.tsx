@@ -1,11 +1,13 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Toggle } from "@/components/ui/toggle";
 import { useToast } from "@/hooks/use-toast";
+import { formatMuscleGroupLabel, muscleGroupsFromString, stringifyMuscleGroups } from "@/lib/training";
+import { cn } from "@/lib/utils";
 
 interface WorkoutDialogProps {
   open: boolean;
@@ -22,41 +24,72 @@ const muscleGroups = [
   "Costas",
   "Pernas",
   "Ombros",
-  "Bíceps",
-  "Tríceps",
-  "Abdômen",
+  "Biceps",
+  "Triceps",
+  "Abdomen",
+  "Core",
   "Corpo Inteiro",
+  "Aerobico",
 ];
 
 const WorkoutDialog = ({ open, onOpenChange, workout }: WorkoutDialogProps) => {
   const { toast } = useToast();
   const [name, setName] = useState("");
-  const [muscleGroup, setMuscleGroup] = useState("");
+  const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (workout) {
       setName(workout.name);
-      setMuscleGroup(workout.muscle_group);
+      setSelectedGroups(muscleGroupsFromString(workout.muscle_group));
     } else {
       setName("");
-      setMuscleGroup("");
+      setSelectedGroups([]);
     }
   }, [workout]);
 
+  const toggleGroup = (group: string) => {
+    setSelectedGroups((previous) => {
+      if (previous.includes(group)) {
+        return previous.filter((item) => item !== group);
+      }
+      return [...previous, group];
+    });
+  };
+
+  const selectedGroupsLabel = useMemo(() => {
+    if (selectedGroups.length === 0) {
+      return "Nenhum grupo selecionado";
+    }
+    return selectedGroups.map(formatMuscleGroupLabel).join(", ");
+  }, [selectedGroups]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (selectedGroups.length === 0) {
+      toast({
+        title: "Selecione ao menos um grupo",
+        description: "Escolha uma ou mais areas para organizar o treino.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error("Não autenticado");
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) throw new Error("Nao autenticado");
+
+      const muscleGroupValue = stringifyMuscleGroups(selectedGroups);
 
       if (workout) {
-        // Update
         const { error } = await supabase
           .from("workouts")
-          .update({ name, muscle_group: muscleGroup })
+          .update({ name, muscle_group: muscleGroupValue })
           .eq("id", workout.id);
 
         if (error) throw error;
@@ -66,14 +99,11 @@ const WorkoutDialog = ({ open, onOpenChange, workout }: WorkoutDialogProps) => {
           description: "Treino atualizado com sucesso",
         });
       } else {
-        // Create
-        const { error } = await supabase
-          .from("workouts")
-          .insert({
-            name,
-            muscle_group: muscleGroup,
-            user_id: session.user.id,
-          });
+        const { error } = await supabase.from("workouts").insert({
+          name,
+          muscle_group: muscleGroupValue,
+          user_id: session.user.id,
+        });
 
         if (error) throw error;
 
@@ -99,19 +129,17 @@ const WorkoutDialog = ({ open, onOpenChange, workout }: WorkoutDialogProps) => {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>
-            {workout ? "Editar Treino" : "Novo Treino"}
-          </DialogTitle>
+          <DialogTitle>{workout ? "Editar treino" : "Novo treino"}</DialogTitle>
           <DialogDescription>
-            {workout ? "Atualize as informações do treino" : "Crie um novo treino personalizado"}
+            {workout ? "Atualize as informacoes do treino" : "Crie um novo treino personalizado"}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="name">Nome do Treino</Label>
+            <Label htmlFor="name">Nome do treino</Label>
             <Input
               id="name"
-              placeholder="Ex: Treino A - Peito e Tríceps"
+              placeholder="Ex: Treino 2 (Aerobico, Pernas)"
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
@@ -119,34 +147,33 @@ const WorkoutDialog = ({ open, onOpenChange, workout }: WorkoutDialogProps) => {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="muscleGroup">Grupo Muscular</Label>
-            <Select value={muscleGroup} onValueChange={setMuscleGroup} required>
-              <SelectTrigger>
-                <SelectValue placeholder="Selecione o grupo muscular" />
-              </SelectTrigger>
-              <SelectContent>
-                {muscleGroups.map((group) => (
-                  <SelectItem key={group} value={group}>
-                    {group}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Label>Grupos musculares</Label>
+            <p className="text-xs text-muted-foreground">{selectedGroupsLabel}</p>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+              {muscleGroups.map((group) => {
+                const active = selectedGroups.includes(group);
+                return (
+                  <Toggle
+                    key={group}
+                    pressed={active}
+                    onPressedChange={() => toggleGroup(group)}
+                    className={cn(
+                      "justify-start text-sm",
+                      active ? "gradient-primary text-primary-foreground shadow-glow-primary" : "border-border",
+                    )}
+                  >
+                    {formatMuscleGroupLabel(group)}
+                  </Toggle>
+                );
+              })}
+            </div>
           </div>
 
           <div className="flex gap-2 justify-end">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-            >
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancelar
             </Button>
-            <Button
-              type="submit"
-              className="gradient-primary"
-              disabled={loading}
-            >
+            <Button type="submit" className="gradient-primary" disabled={loading}>
               {loading ? "Salvando..." : workout ? "Atualizar" : "Criar"}
             </Button>
           </div>
