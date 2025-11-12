@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
@@ -8,8 +8,11 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
+import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 import {
   Activity,
   ArrowLeft,
@@ -56,6 +59,23 @@ type RestTimerState = {
   active: boolean;
 };
 
+type PersistedSessionState = {
+  version: number;
+  workoutId: string;
+  userId: string;
+  sessionStart: number | null;
+  sessionEnd: number | null;
+  sessionVolume: number;
+  progressMap: ProgressMap;
+  weightOverrides: Record<string, number>;
+  restTimers: Record<string, RestTimerState>;
+  lastUpdated: number;
+  activeExerciseId: string | null;
+};
+
+const SESSION_STORAGE_PREFIX = "gymii-active-session";
+const SESSION_STORAGE_VERSION = 1;
+
 const formatClock = (seconds: number): string => {
   const safeSeconds = Math.max(0, Math.floor(seconds));
   const hours = Math.floor(safeSeconds / 3600);
@@ -94,6 +114,71 @@ const volumeFormatter = new Intl.NumberFormat("pt-BR", {
   maximumFractionDigits: 1,
 });
 
+const sanitizeProgressMapState = (
+  raw: ProgressMap | null | undefined,
+  exercises: SessionExercise[],
+): ProgressMap => {
+  const safe: ProgressMap = {};
+  exercises.forEach((exercise) => {
+    const value = raw?.[exercise.id];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      safe[exercise.id] = Math.max(0, Math.min(exercise.sets, Math.round(value)));
+    } else {
+      safe[exercise.id] = 0;
+    }
+  });
+  return safe;
+};
+
+const sanitizeWeightOverridesState = (
+  raw: Record<string, number> | null | undefined,
+  exercises: SessionExercise[],
+): Record<string, number> => {
+  const safe: Record<string, number> = {};
+  exercises.forEach((exercise) => {
+    const fallback = exercise.set_plan[0]?.weight ?? exercise.weight;
+    const value = raw?.[exercise.id];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      safe[exercise.id] = Math.round(value * 100) / 100;
+    } else {
+      safe[exercise.id] = fallback;
+    }
+  });
+  return safe;
+};
+
+const sanitizeRestTimersState = (
+  raw: Record<string, RestTimerState> | null | undefined,
+  exercises: SessionExercise[],
+  secondsSinceUpdate: number,
+): Record<string, RestTimerState> => {
+  const safe: Record<string, RestTimerState> = {};
+  exercises.forEach((exercise) => {
+    const fallback = createRestTimer(exercise.rest_seconds);
+    const timer = raw?.[exercise.id];
+    if (!timer) {
+      safe[exercise.id] = fallback;
+      return;
+    }
+
+    const duration = Math.max(10, timer.duration || fallback.duration);
+    let remaining = Math.min(duration, Math.max(0, timer.remaining ?? duration));
+    let active = Boolean(timer.active);
+
+    if (active && secondsSinceUpdate > 0) {
+      remaining = Math.max(0, remaining - secondsSinceUpdate);
+      active = remaining > 0;
+    }
+
+    safe[exercise.id] = {
+      duration,
+      remaining,
+      active,
+    };
+  });
+  return safe;
+};
+
 const WorkoutSession = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -111,6 +196,43 @@ const WorkoutSession = () => {
   const [sessionEnd, setSessionEnd] = useState<number | null>(null);
   const [sessionVolume, setSessionVolume] = useState(0);
   const [confirmFinishOpen, setConfirmFinishOpen] = useState(false);
+  const [activeExerciseId, setActiveExerciseId] = useState<string | null>(null);
+  const [sessionStateHydrated, setSessionStateHydrated] = useState(false);
+
+  const storageKey = useMemo(() => {
+    if (!userId || !id) {
+      return null;
+    }
+    return `${SESSION_STORAGE_PREFIX}:${userId}:${id}`;
+  }, [userId, id]);
+
+  const restTickRef = useRef<number>(Date.now());
+
+  const applyRestTimerDelta = useCallback(
+    (deltaSeconds: number) => {
+      if (deltaSeconds <= 0) {
+        return;
+      }
+      setRestTimers((previous) => {
+        let changed = false;
+        const next: Record<string, RestTimerState> = {};
+        Object.entries(previous).forEach(([exerciseId, timer]) => {
+          if (timer.active && timer.remaining > 0) {
+            const remaining = Math.max(0, timer.remaining - deltaSeconds);
+            const active = remaining > 0;
+            if (remaining !== timer.remaining || active !== timer.active) {
+              changed = true;
+            }
+            next[exerciseId] = { ...timer, remaining, active };
+          } else {
+            next[exerciseId] = timer;
+          }
+        });
+        return changed ? next : previous;
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     const initialize = async () => {
@@ -141,8 +263,8 @@ const WorkoutSession = () => {
 
         if (workoutError || !workoutData) {
           toast({
-            title: "Treino nÃ£o encontrado",
-            description: "NÃ£o foi possÃ­vel carregar este treino.",
+            title: "Treino não encontrado",
+            description: "Não foi possível carregar este treino.",
             variant: "destructive",
           });
           navigate("/workouts");
@@ -159,8 +281,8 @@ const WorkoutSession = () => {
 
         if (exercisesError) {
           toast({
-            title: "Erro ao carregar exercÃ­cios",
-            description: "NÃ£o foi possÃ­vel carregar os exercÃ­cios deste treino.",
+            title: "Erro ao carregar exercícios",
+            description: "Não foi possível carregar os exercícios deste treino.",
             variant: "destructive",
           });
           setExercises([]);
@@ -234,7 +356,7 @@ const WorkoutSession = () => {
       } catch (error) {
         toast({
           title: "Erro inesperado",
-          description: "NÃ£o foi possÃ­vel carregar este treino.",
+          description: "Não foi possível carregar este treino.",
           variant: "destructive",
         });
       } finally {
@@ -246,10 +368,99 @@ const WorkoutSession = () => {
   }, [id, navigate, toast]);
 
   useEffect(() => {
-    if (!loading && sessionStart === null) {
+    if (!sessionStateHydrated && !loading && !storageKey) {
+      setSessionStateHydrated(true);
+    }
+  }, [loading, storageKey, sessionStateHydrated]);
+
+  useEffect(() => {
+    if (!storageKey || loading || sessionStateHydrated) {
+      return;
+    }
+
+    if (typeof window === "undefined") {
+      setSessionStateHydrated(true);
+      return;
+    }
+
+    const rawState = window.localStorage.getItem(storageKey);
+
+    if (!rawState) {
+      setSessionStateHydrated(true);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(rawState) as PersistedSessionState;
+
+      if (
+        parsed.version !== SESSION_STORAGE_VERSION ||
+        parsed.userId !== userId ||
+        parsed.workoutId !== id
+      ) {
+        window.localStorage.removeItem(storageKey);
+        setSessionStateHydrated(true);
+        return;
+      }
+
+      if (typeof parsed.sessionStart === "number") {
+        setSessionStart(parsed.sessionStart);
+        setSessionElapsed(Math.max(0, Math.floor((Date.now() - parsed.sessionStart) / 1000)));
+      }
+
+      if (typeof parsed.sessionEnd === "number") {
+        setSessionEnd(parsed.sessionEnd);
+      }
+
+      if (typeof parsed.sessionVolume === "number" && Number.isFinite(parsed.sessionVolume)) {
+        setSessionVolume(parsed.sessionVolume);
+      }
+
+      const lastUpdated =
+        typeof parsed.lastUpdated === "number"
+          ? parsed.lastUpdated
+          : parsed.sessionStart ?? Date.now();
+      const secondsSinceUpdate =
+        parsed.sessionEnd !== null
+          ? 0
+          : Math.max(0, Math.floor((Date.now() - lastUpdated) / 1000));
+
+      const storedProgress = sanitizeProgressMapState(parsed.progressMap, exercises);
+      const storedWeights = sanitizeWeightOverridesState(parsed.weightOverrides, exercises);
+      const storedTimers = sanitizeRestTimersState(parsed.restTimers, exercises, secondsSinceUpdate);
+
+      setProgressMap(storedProgress);
+      setWeightOverrides(storedWeights);
+      setRestTimers(storedTimers);
+      setActiveExerciseId(typeof parsed.activeExerciseId === "string" ? parsed.activeExerciseId : null);
+    } catch (error) {
+      console.error("Failed to restore workout session state", error);
+      window.localStorage.removeItem(storageKey);
+    } finally {
+      setSessionStateHydrated(true);
+    }
+  }, [storageKey, loading, sessionStateHydrated, exercises, id, userId]);
+
+  useEffect(() => {
+    if (!loading && sessionStateHydrated && sessionStart === null) {
       setSessionStart(Date.now());
     }
-  }, [loading, sessionStart]);
+  }, [loading, sessionStateHydrated, sessionStart]);
+
+  useEffect(() => {
+    if (!activeExerciseId) {
+      return;
+    }
+    const exercise = exercises.find((item) => item.id === activeExerciseId);
+    if (!exercise) {
+      setActiveExerciseId(null);
+      return;
+    }
+    const completed = progressMap[activeExerciseId] ?? 0;
+    if (completed >= exercise.sets) {
+      setActiveExerciseId(null);
+    }
+  }, [activeExerciseId, exercises, progressMap]);
 
   useEffect(() => {
     if (sessionStart === null || sessionEnd !== null) {
@@ -262,28 +473,86 @@ const WorkoutSession = () => {
   }, [sessionStart, sessionEnd]);
 
   useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      if (sessionStart !== null && sessionEnd === null) {
+        setSessionElapsed(Math.floor((Date.now() - sessionStart) / 1000));
+      }
+      const now = Date.now();
+      const diff = now - restTickRef.current;
+      if (diff >= 1000) {
+        const elapsedSeconds = Math.floor(diff / 1000);
+        restTickRef.current = now;
+        applyRestTimerDelta(elapsedSeconds);
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [applyRestTimerDelta, sessionEnd, sessionStart]);
+
+  useEffect(() => {
+    restTickRef.current = Date.now();
     const interval = setInterval(() => {
-      setRestTimers((previous) => {
-        let changed = false;
-        const next: Record<string, RestTimerState> = {};
-        Object.entries(previous).forEach(([exerciseId, timer]) => {
-          if (timer.active && timer.remaining > 0) {
-            const remaining = Math.max(0, timer.remaining - 1);
-            const active = remaining > 0;
-            if (remaining !== timer.remaining || active !== timer.active) {
-              changed = true;
-            }
-            next[exerciseId] = { ...timer, remaining, active };
-          } else {
-            next[exerciseId] = timer;
-          }
-        });
-        return changed ? next : previous;
-      });
+      const now = Date.now();
+      const diff = now - restTickRef.current;
+      if (diff < 1000) {
+        return;
+      }
+      const elapsedSeconds = Math.floor(diff / 1000);
+      restTickRef.current = now;
+      applyRestTimerDelta(elapsedSeconds);
     }, 1000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [applyRestTimerDelta]);
+
+  useEffect(() => {
+    if (
+      !storageKey ||
+      !sessionStateHydrated ||
+      sessionStart === null ||
+      typeof window === "undefined"
+    ) {
+      return;
+    }
+
+    const payload: PersistedSessionState = {
+      version: SESSION_STORAGE_VERSION,
+      workoutId: id ?? "",
+      userId: userId ?? "",
+      sessionStart,
+      sessionEnd,
+      sessionVolume,
+      progressMap,
+      weightOverrides,
+      restTimers,
+      lastUpdated: Date.now(),
+      activeExerciseId,
+    };
+
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(payload));
+    } catch (error) {
+      console.warn("Nao foi possivel salvar o treino em andamento", error);
+    }
+  }, [
+    storageKey,
+    sessionStateHydrated,
+    sessionStart,
+    sessionEnd,
+    sessionVolume,
+    progressMap,
+    weightOverrides,
+    restTimers,
+    activeExerciseId,
+    id,
+    userId,
+  ]);
 
   const totalSets = useMemo(
     () => exercises.reduce((sum, exercise) => sum + exercise.sets, 0),
@@ -301,10 +570,21 @@ const WorkoutSession = () => {
 
   const sessionPercentage = totalSets === 0 ? 0 : Math.round((completedSets / totalSets) * 100);
 
-  const nextExercise = useMemo(
-    () => exercises.find((exercise) => (progressMap[exercise.id] ?? 0) < exercise.sets) ?? null,
+  const pendingExercises = useMemo(
+    () => exercises.filter((exercise) => (progressMap[exercise.id] ?? 0) < exercise.sets),
     [exercises, progressMap],
   );
+
+  const nextExercise = pendingExercises[0] ?? null;
+
+  const activeExercise = useMemo(() => {
+    if (!activeExerciseId) {
+      return nextExercise;
+    }
+    return exercises.find((exercise) => exercise.id === activeExerciseId) ?? nextExercise;
+  }, [activeExerciseId, exercises, nextExercise]);
+
+  const selectValue = activeExerciseId ?? nextExercise?.id ?? "__auto__";
 
   const workoutFinished = exercises.length > 0 && !nextExercise;
 
@@ -342,6 +622,17 @@ const WorkoutSession = () => {
     },
     [weightOverrides],
   );
+
+  const clearPersistedSession = useCallback(() => {
+    if (!storageKey || typeof window === "undefined") {
+      return;
+    }
+    try {
+      window.localStorage.removeItem(storageKey);
+    } catch (error) {
+      console.warn("Nao foi possivel limpar o estado do treino", error);
+    }
+  }, [storageKey]);
 
   const handleWeightInputChange = (exerciseId: string, rawValue: string, fallback: number) => {
     setWeightOverrides((previous) => {
@@ -414,8 +705,8 @@ const WorkoutSession = () => {
 
     if (!userId) {
       toast({
-        title: "SessÃ£o invÃ¡lida",
-        description: "FaÃ§a login novamente para registrar o treino.",
+        title: "Sessão inválida",
+        description: "Faça login novamente para registrar o treino.",
         variant: "destructive",
       });
       return;
@@ -458,7 +749,7 @@ const WorkoutSession = () => {
 
       toast({
         title: "Erro ao registrar",
-        description: "NÃ£o foi possÃ­vel registrar a sÃ©rie. Tente novamente.",
+        description: "Não foi possível registrar a série. Tente novamente.",
         variant: "destructive",
       });
       return;
@@ -505,13 +796,14 @@ const WorkoutSession = () => {
 
     if (nextCount === exercise.sets) {
       toast({
-        title: "ExercÃ­cio concluÃ­do",
-        description: `${exercise.name} registrado no histÃ³rico.`,
+        title: "Exercício concluído",
+        description: `${exercise.name} registrado no histórico.`,
       });
     }
   };
 
   const finalizeWorkout = () => {
+    clearPersistedSession();
     toast({
       title: "Treino finalizado!",
       description: `Duracao ${summaryDurationLabel} - Volume ${summaryVolumeLabel}`,
@@ -585,40 +877,87 @@ const WorkoutSession = () => {
             <CardTitle>Progresso do treino</CardTitle>
             <CardDescription>
               {workoutFinished
-                ? "Tudo concluÃ­do! Finalize o treino para registrar a sessÃ£o."
-                : nextExercise
-                  ? `VocÃª estÃ¡ em ${nextExercise.name}.`
-                  : "Adicione exercÃ­cios ao treino para comeÃ§ar."}
+                ? "Tudo concluído! Finalize o treino para registrar a sessão."
+                : exercises.length === 0
+                  ? "Adicione exercícios ao treino para começar."
+                  : activeExercise
+                    ? `Você está trabalhando em ${activeExercise.name}. Troque o exercício em foco abaixo conforme a disponibilidade dos equipamentos.`
+                    : "Selecione um exercício para iniciar."}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <Progress value={sessionPercentage} />
             <div className="flex items-center justify-between text-sm text-muted-foreground">
               <span>
-                {completedSets} de {totalSets} sÃ©ries completas
+                {completedSets} de {totalSets} séries completas
               </span>
               <span>{sessionPercentage}%</span>
             </div>
 
-            {nextExercise ? (
+            {exercises.length > 0 && (
+              <div className="space-y-2">
+                <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Exercício em foco
+                </Label>
+                <Select
+                  value={selectValue}
+                  onValueChange={(value) => setActiveExerciseId(value === "__auto__" ? null : value)}
+                >
+                  <SelectTrigger className="w-full" disabled={pendingExercises.length === 0}>
+                    <SelectValue placeholder="Selecione o exercício que deseja executar" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__auto__">
+                      {pendingExercises.length === 0
+                        ? "Todos os exercícios foram concluídos"
+                        : `Sugestão automática (${pendingExercises[0]?.name ?? "próximo disponível"})`}
+                    </SelectItem>
+                    {exercises.map((exercise) => {
+                      const completed = Math.min(progressMap[exercise.id] ?? 0, exercise.sets);
+                      const finished = completed >= exercise.sets;
+                      const label = finished
+                        ? `${exercise.name} (concluído)`
+                        : `${exercise.name} (${completed}/${exercise.sets})`;
+                      return (
+                        <SelectItem key={exercise.id} value={exercise.id} disabled={finished}>
+                          {label}
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Escolha outro exercício caso o equipamento atual esteja ocupado.
+                </p>
+              </div>
+            )}
+
+            {activeExercise ? (
               <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/40 p-4 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">PrÃ³ximo exercÃ­cio</p>
-                  <p className="text-lg font-semibold">{nextExercise.name}</p>
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Exercício em execução</p>
+                  <p className="text-lg font-semibold">{activeExercise.name}</p>
                   <p className="text-sm text-muted-foreground">
-                    {nextExercise.sets}x{nextExercise.reps} â€¢ {resolveWeight(nextExercise)} kg
+                    {activeExercise.sets}x{activeExercise.reps} • {resolveWeight(activeExercise)} kg
                   </p>
                 </div>
                 <Button
-                  onClick={() => handleCompleteSet(nextExercise.id)}
+                  onClick={() => handleCompleteSet(activeExercise.id)}
                   className="gradient-primary shadow-glow-primary hover:opacity-90 transition-opacity"
+                  disabled={saving[activeExercise.id] || (progressMap[activeExercise.id] ?? 0) >= activeExercise.sets}
                 >
-                  Concluir sÃ©rie ({(progressMap[nextExercise.id] ?? 0) + 1}/{nextExercise.sets})
+                  {saving[activeExercise.id]
+                    ? "Registrando..."
+                    : `Concluir série (${Math.min((progressMap[activeExercise.id] ?? 0) + 1, activeExercise.sets)}/${
+                        activeExercise.sets
+                      })`}
                 </Button>
               </div>
             ) : (
               <div className="rounded-lg border border-border/60 bg-card/40 p-4 text-sm text-muted-foreground">
-                Nenhum exercÃ­cio pendente. Finalize o treino quando estiver pronto.
+                {exercises.length === 0
+                  ? "Adicione exercícios ao treino para começar."
+                  : "Nenhum exercício pendente. Finalize o treino quando estiver pronto."}
               </div>
             )}
           </CardContent>
@@ -627,14 +966,14 @@ const WorkoutSession = () => {
           <Card className="shadow-card border-border/60 bg-primary/5">
             <CardHeader>
               <CardTitle>Resumo do treino</CardTitle>
-              <CardDescription>Todos os exercÃ­cios foram registrados. Revise e finalize a sessÃ£o.</CardDescription>
+              <CardDescription>Todos os exercícios foram registrados. Revise e finalize a sessão.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-4 md:grid-cols-3">
                 <div className="rounded-lg border border-border/60 p-3">
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Timer className="w-4 h-4" />
-                    DuraÃ§Ã£o
+                    Duração
                   </div>
                   <p className="mt-1 text-2xl font-semibold">{summaryDurationLabel}</p>
                 </div>
@@ -648,19 +987,19 @@ const WorkoutSession = () => {
                 <div className="rounded-lg border border-border/60 p-3">
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Activity className="w-4 h-4" />
-                    SÃ©ries concluÃ­das
+                    Séries concluídas
                   </div>
                   <p className="mt-1 text-2xl font-semibold">
                     {completedSets}/{totalSets}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    ExercÃ­cios finalizados: {completedExercises}/{exercises.length}
+                    Exercícios finalizados: {completedExercises}/{exercises.length}
                   </p>
                 </div>
               </div>
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <p className="text-sm text-muted-foreground">
-                  Tudo certo! Toque em â€œFinalizar treinoâ€ para salvar o tempo total e voltar ao painel.
+                  Tudo certo! Toque em “Finalizar treino” para salvar o tempo total e voltar ao painel.
                 </p>
                 <Button
                   onClick={handleFinishWorkoutRequest}
@@ -679,9 +1018,9 @@ const WorkoutSession = () => {
           {exercises.length === 0 ? (
             <Card className="shadow-card border-border/60">
               <CardContent className="py-12 text-center space-y-3">
-                <p className="text-muted-foreground">Nenhum exercÃ­cio cadastrado neste treino.</p>
+                <p className="text-muted-foreground">Nenhum exercício cadastrado neste treino.</p>
                 <Button variant="outline" onClick={() => navigate(`/workout/${id}`)}>
-                  Adicionar exercÃ­cios
+                  Adicionar exercícios
                 </Button>
               </CardContent>
             </Card>
@@ -696,10 +1035,29 @@ const WorkoutSession = () => {
               const restActive = restTimer?.active ?? false;
               const restStatus = restActive
                 ? restRemaining === 0
-                  ? "Descanso concluÃ­do"
+                  ? "Descanso concluído"
                   : "Descanso em andamento"
-                : "Pronto para prÃ³xima sÃ©rie";
+                : "Pronto para próxima série";
               const restCountdownLabel = formatClock(restRemaining);
+              const setDetails = Array.from({ length: exercise.sets }, (_, index) => {
+                const planEntry = exercise.set_plan[index];
+                const repsValue =
+                  typeof planEntry?.reps === "number" && Number.isFinite(planEntry.reps)
+                    ? planEntry.reps
+                    : exercise.reps;
+                const weightValue =
+                  typeof planEntry?.weight === "number" && Number.isFinite(planEntry.weight)
+                    ? planEntry.weight
+                    : resolveWeight(exercise);
+                const status: "completed" | "active" | "pending" =
+                  index < completed ? "completed" : !finished && index === completed ? "active" : "pending";
+                return {
+                  index: index + 1,
+                  reps: repsValue,
+                  weight: weightValue,
+                  status,
+                };
+              });
 
               return (
                 <Card key={exercise.id} className="shadow-card border-border/60">
@@ -707,11 +1065,11 @@ const WorkoutSession = () => {
                     <div className="space-y-1">
                       <CardTitle className="text-lg">{exercise.name}</CardTitle>
                       <CardDescription>
-                        {exercise.sets} sÃ©ries â€¢ {exercise.reps} repetiÃ§Ãµes
+                        {exercise.sets} séries • {exercise.reps} repetições
                       </CardDescription>
                     </div>
                     <Badge variant={finished ? "secondary" : "outline"}>
-                      {finished ? "ConcluÃ­do" : `SÃ©rie ${completed + 1} de ${exercise.sets}`}
+                      {finished ? "Concluído" : `Série ${completed + 1} de ${exercise.sets}`}
                     </Badge>
                   </CardHeader>
                   <CardContent className="space-y-4">
@@ -721,7 +1079,7 @@ const WorkoutSession = () => {
                           <Repeat className="w-4 h-4" />
                         </div>
                         <div>
-                          <p className="text-xs uppercase tracking-wide">SÃ©ries x Reps</p>
+                          <p className="text-xs uppercase tracking-wide">Séries x Reps</p>
                           <p className="font-semibold text-foreground">
                             {exercise.sets} x {exercise.reps}
                           </p>
@@ -752,7 +1110,7 @@ const WorkoutSession = () => {
                       <div>
                         <p className="text-xs uppercase tracking-wide text-muted-foreground">Configurar descanso</p>
                         <p className="text-sm text-muted-foreground">
-                          {restActive ? "Contagem ativa" : "Pronto"} Â· alvo atual {restDuration}s
+                          {restActive ? "Contagem ativa" : "Pronto"} · alvo atual {restDuration}s
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
@@ -783,6 +1141,44 @@ const WorkoutSession = () => {
                           Reiniciar
                         </Button>
                       </div>
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-2">
+                      <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                        Séries detalhadas
+                      </Label>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {setDetails.map((detail) => (
+                          <div
+                            key={`${exercise.id}-set-${detail.index}`}
+                            className={cn(
+                              "rounded-lg border p-3 text-sm transition-colors",
+                              detail.status === "completed" && "border-emerald-500/60 bg-emerald-500/10",
+                              detail.status === "active" && "border-primary/60 bg-primary/10",
+                              detail.status === "pending" && "border-border/60 bg-background/40",
+                            )}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="font-semibold text-foreground">Série {detail.index}</span>
+                              <span className="text-xs uppercase text-muted-foreground">
+                                {detail.status === "completed"
+                                  ? "Concluída"
+                                  : detail.status === "active"
+                                    ? "Em andamento"
+                                    : "Planejada"}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {detail.reps} repetições • {detail.weight} kg
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Ajuste o peso antes de concluir a série se alterar a carga em relação ao plano.
+                      </p>
                     </div>
 
                     <Separator />
@@ -828,7 +1224,7 @@ const WorkoutSession = () => {
 
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <p className="text-sm text-muted-foreground">
-                        {finished ? "ExercÃ­cio finalizado." : `Complete as sÃ©ries para registrar o exercÃ­cio.`}
+                        {finished ? "Exercício finalizado." : `Complete as séries para registrar o exercício.`}
                       </p>
                       <Button
                         onClick={() => handleCompleteSet(exercise.id)}
@@ -838,12 +1234,12 @@ const WorkoutSession = () => {
                         {finished ? (
                           <span className="inline-flex items-center gap-2">
                             <CheckCircle2 className="w-4 h-4" />
-                            ConcluÃ­do
+                            Concluído
                           </span>
                         ) : saving[exercise.id] ? (
                           "Registrando..."
                         ) : (
-                          `Concluir sÃ©rie (${completed + 1}/${exercise.sets})`
+                          `Concluir série (${completed + 1}/${exercise.sets})`
                         )}
                       </Button>
                     </div>
@@ -875,4 +1271,5 @@ const WorkoutSession = () => {
 };
 
 export default WorkoutSession;
+
 
