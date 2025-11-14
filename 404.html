@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>Redirecionando...</title>
+    <meta name="robots" content="noindex" />
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        margin: 0;
+        background: #06090f;
+        color: #f8fafc;
+      }
+    </style>
+    <script>
+      (function () {
+        var repoBase = "/gymii-smart-coach";
+        var pathname = window.location.pathname || "/";
+        var basePath = pathname.startsWith(repoBase) ? repoBase : "/";
+        var relativePath;
+        if (basePath === "/") {
+          relativePath = pathname;
+        } else {
+          relativePath = pathname.slice(basePath.length);
+        }
+        if (!relativePath.startsWith("/")) {
+          relativePath = "/" + relativePath;
+        }
+        var payload = {
+          base: basePath,
+          path: relativePath,
+          search: window.location.search || "",
+          hash: window.location.hash || "",
+        };
+        try {
+          sessionStorage.setItem("gymii-spa-redirect", JSON.stringify(payload));
+        } catch (err) {
+          console.warn("redirect storage failed", err);
+        }
+        var target = basePath === "/" ? "/" : basePath + "/";
+        window.location.replace(target);
+      })();
+    </script>
+  </head>
+  <body>
+    <p>Redirecionando para o aplicativo...</p>
+  </body>
+</html>
