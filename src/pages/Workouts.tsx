@@ -54,35 +54,37 @@ const parseTemplateExercises = (value: unknown): WorkoutTemplateExercise[] => {
     .filter((exercise): exercise is WorkoutTemplateExercise => Boolean(exercise));
 };
 
-const normalizeTemplate = (payload: any): WorkoutTemplate => {
-  const muscle_groups = Array.isArray(payload?.muscle_groups)
-    ? payload.muscle_groups.map((item: unknown) => String(item))
+const normalizeTemplate = (payload: unknown): WorkoutTemplate => {
+  const record = (payload ?? {}) as Record<string, unknown>;
+
+  const muscle_groups = Array.isArray(record.muscle_groups)
+    ? record.muscle_groups.map((item: unknown) => String(item))
     : [];
 
   const rest_seconds =
-    typeof payload?.rest_seconds === "number"
-      ? payload.rest_seconds
-      : typeof payload?.rest_seconds === "string"
-        ? Number(payload.rest_seconds)
+    typeof record.rest_seconds === "number"
+      ? record.rest_seconds
+      : typeof record.rest_seconds === "string"
+        ? Number(record.rest_seconds)
         : null;
 
   const duration_minutes =
-    typeof payload?.duration_minutes === "number"
-      ? payload.duration_minutes
-      : typeof payload?.duration_minutes === "string"
-        ? Number(payload.duration_minutes)
+    typeof record.duration_minutes === "number"
+      ? record.duration_minutes
+      : typeof record.duration_minutes === "string"
+        ? Number(record.duration_minutes)
         : null;
 
   return {
-    id: String(payload?.id ?? ""),
-    slug: String(payload?.slug ?? ""),
-    name: String(payload?.name ?? "Treino"),
-    description: payload?.description ? String(payload.description) : null,
+    id: String(record.id ?? ""),
+    slug: String(record.slug ?? ""),
+    name: String(record.name ?? "Treino"),
+    description: record.description ? String(record.description) : null,
     muscle_groups,
-    intensity: payload?.intensity ? String(payload.intensity) : null,
+    intensity: record.intensity ? String(record.intensity) : null,
     rest_seconds: Number.isFinite(rest_seconds || NaN) ? rest_seconds : null,
     duration_minutes: Number.isFinite(duration_minutes || NaN) ? duration_minutes : null,
-    exercises: parseTemplateExercises(payload?.exercises),
+    exercises: parseTemplateExercises(record.exercises),
   };
 };
 
@@ -244,10 +246,11 @@ const Workouts = () => {
       });
 
       fetchWorkouts();
-    } catch (error: any) {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : null;
       toast({
         title: "Erro ao importar",
-        description: error.message ?? "Não foi possível importar o template.",
+        description: message ?? "Não foi possível importar o template.",
         variant: "destructive",
       });
     } finally {
@@ -289,14 +292,17 @@ const Workouts = () => {
   return (
     <div className="min-h-screen gradient-dark">
       <header className="border-b border-border bg-card/50 backdrop-blur sticky top-0 z-10">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+        <div className="container mx-auto flex flex-wrap items-center justify-between gap-3 px-4 py-4">
           <div className="flex items-center gap-3">
             <Button variant="ghost" size="icon" onClick={() => navigate("/dashboard")}>
               <ArrowLeft className="w-5 h-5" />
             </Button>
             <h1 className="text-2xl font-bold">Meus Treinos</h1>
           </div>
-          <Button onClick={() => setDialogOpen(true)} className="gradient-primary shadow-glow-primary">
+          <Button
+            onClick={() => setDialogOpen(true)}
+            className="w-full gradient-primary shadow-glow-primary sm:w-auto"
+          >
             <Plus className="w-4 h-4 mr-2" />
             Novo Treino
           </Button>
@@ -306,7 +312,7 @@ const Workouts = () => {
       <main className="container mx-auto px-4 py-8 space-y-8">
         {hasTemplates && (
           <section className="space-y-4">
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-xl font-semibold flex items-center gap-2">
                   <Sparkles className="w-5 h-5 text-primary" />
@@ -370,7 +376,7 @@ const Workouts = () => {
             {workouts.map((workout) => (
               <Card key={workout.id} className="shadow-card border-border/50 hover:border-primary/50 transition-colors">
                 <CardHeader>
-                  <CardTitle className="flex items-center justify-between gap-2">
+                  <CardTitle className="flex flex-wrap items-center justify-between gap-2">
                     <span className="truncate">{workout.name}</span>
                     <div className="flex gap-2">
                       <Button variant="ghost" size="icon" onClick={() => handleEdit(workout)}>

@@ -72,10 +72,11 @@ const Profile = () => {
         title: "Sucesso",
         description: "Perfil atualizado com sucesso",
       });
-    } catch (error: any) {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Não foi possível salvar o perfil.";
       toast({
         title: "Erro",
-        description: error.message,
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -86,7 +87,7 @@ const Profile = () => {
   return (
     <div className="min-h-screen gradient-dark">
       <header className="border-b border-border bg-card/50 backdrop-blur">
-        <div className="container mx-auto px-4 py-4 flex items-center gap-3">
+        <div className="container mx-auto flex flex-wrap items-center gap-3 px-4 py-4">
           <Button
             variant="ghost"
             size="icon"
@@ -115,7 +116,7 @@ const Profile = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="weight">Peso (kg)</Label>
                   <Input

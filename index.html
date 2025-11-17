@@ -18,6 +18,33 @@
   </head>
 
   <body>
+    <script>
+      (function () {
+        var redirectKey = "gymii-spa-redirect";
+        try {
+          var raw = sessionStorage.getItem(redirectKey);
+          if (!raw) {
+            return;
+          }
+          sessionStorage.removeItem(redirectKey);
+          var payload = JSON.parse(raw);
+          var basePath = payload.base || "/";
+          var normalizedBase = basePath.endsWith("/") ? basePath.slice(0, -1) : basePath;
+          if (normalizedBase === "") {
+            normalizedBase = "/";
+          }
+          var nextPath = payload.path || "/";
+          if (!nextPath.startsWith("/")) {
+            nextPath = "/" + nextPath;
+          }
+          var prefix = normalizedBase === "/" ? "" : normalizedBase;
+          var nextUrl = prefix + nextPath + (payload.search || "") + (payload.hash || "");
+          window.history.replaceState(null, "", nextUrl || "/");
+        } catch (error) {
+          console.warn("SPA redirect restore falhou", error);
+        }
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

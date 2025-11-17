@@ -276,7 +276,7 @@ const Progress = () => {
   return (
     <div className="min-h-screen gradient-dark">
       <header className="border-b border-border bg-card/50 backdrop-blur">
-        <div className="container mx-auto px-4 py-4 flex items-center gap-3">
+        <div className="container mx-auto flex flex-wrap items-center gap-3 px-4 py-4">
           <Button variant="ghost" size="icon" onClick={() => navigate("/dashboard")}>
             <ArrowLeft className="w-5 h-5" />
           </Button>
@@ -292,7 +292,7 @@ const Progress = () => {
       <main className="container mx-auto px-4 py-8 space-y-6">
         {stats.hasLogs ? (
           <>
-            <section className="grid gap-4 md:grid-cols-3">
+            <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {summaryCards.map((card) => (
                 <Card key={card.title} className="shadow-card border-border/60 bg-card/80 backdrop-blur">
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">

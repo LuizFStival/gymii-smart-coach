@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams, UNSAFE_NavigationContext } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { SessionStatus, useWorkoutTimer } from "@/contexts/WorkoutContext";
 import {
   Activity,
   ArrowLeft,
@@ -21,7 +22,6 @@ import {
   Minus,
   Plus,
   Repeat,
-  RotateCcw,
   Timer,
   Weight,
 } from "lucide-react";
@@ -32,6 +32,7 @@ import {
   parseSetPlan,
   SetPlanEntry,
 } from "@/lib/training";
+import { SESSION_STORAGE_PREFIX, SESSION_STORAGE_VERSION } from "@/lib/workoutSessionStorage";
 
 type WorkoutRecord = {
   id: string;
@@ -62,9 +63,11 @@ type RestTimerState = {
 type PersistedSessionState = {
   version: number;
   workoutId: string;
+  workoutName: string | null;
   userId: string;
   sessionStart: number | null;
   sessionEnd: number | null;
+  sessionStatus: SessionStatus;
   sessionVolume: number;
   progressMap: ProgressMap;
   weightOverrides: Record<string, number>;
@@ -72,9 +75,6 @@ type PersistedSessionState = {
   lastUpdated: number;
   activeExerciseId: string | null;
 };
-
-const SESSION_STORAGE_PREFIX = "gymii-active-session";
-const SESSION_STORAGE_VERSION = 1;
 
 const formatClock = (seconds: number): string => {
   const safeSeconds = Math.max(0, Math.floor(seconds));
@@ -192,12 +192,15 @@ const WorkoutSession = () => {
   const [loading, setLoading] = useState(true);
   const [restTimers, setRestTimers] = useState<Record<string, RestTimerState>>({});
   const [sessionStart, setSessionStart] = useState<number | null>(null);
-  const [sessionElapsed, setSessionElapsed] = useState(0);
   const [sessionEnd, setSessionEnd] = useState<number | null>(null);
   const [sessionVolume, setSessionVolume] = useState(0);
   const [confirmFinishOpen, setConfirmFinishOpen] = useState(false);
   const [activeExerciseId, setActiveExerciseId] = useState<string | null>(null);
   const [sessionStateHydrated, setSessionStateHydrated] = useState(false);
+  const [sessionStatus, setSessionStatus] = useState<SessionStatus>("idle");
+  const [exitPromptOpen, setExitPromptOpen] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
+  const { elapsedSeconds: timerElapsed, startTimer, finishTimer, resetTimer, syncTimer } = useWorkoutTimer();
 
   const storageKey = useMemo(() => {
     if (!userId || !id) {
@@ -207,6 +210,50 @@ const WorkoutSession = () => {
   }, [userId, id]);
 
   const restTickRef = useRef<number>(Date.now());
+  const navigationContext = useContext(UNSAFE_NavigationContext);
+  const routerNavigator = navigationContext?.navigator as { block?: (blocker: (tx: { retry: () => void }) => void) => () => void } | undefined;
+
+  useEffect(
+    () => () => {
+      resetTimer();
+    },
+    [resetTimer],
+  );
+
+  useEffect(() => {
+    const shouldBlock = sessionStatus === "in_progress";
+    if (!shouldBlock || typeof routerNavigator?.block !== "function") {
+      setExitPromptOpen(false);
+      setPendingNavigation(null);
+      return;
+    }
+    const unblock = routerNavigator.block((tx: { retry: () => void }) => {
+      const retry = () => {
+        unblock();
+        tx.retry();
+      };
+      setPendingNavigation(() => retry);
+      setExitPromptOpen(true);
+    });
+    return () => {
+      unblock();
+      setPendingNavigation(null);
+    };
+  }, [routerNavigator, sessionStatus]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (sessionStatus === "in_progress") {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [sessionStatus]);
 
   const applyRestTimerDelta = useCallback(
     (deltaSeconds: number) => {
@@ -368,10 +415,10 @@ const WorkoutSession = () => {
   }, [id, navigate, toast]);
 
   useEffect(() => {
-    if (!sessionStateHydrated && !loading && !storageKey) {
+    if (!sessionStateHydrated && !loading && !storageKey && !userId) {
       setSessionStateHydrated(true);
     }
-  }, [loading, storageKey, sessionStateHydrated]);
+  }, [loading, storageKey, sessionStateHydrated, userId]);
 
   useEffect(() => {
     if (!storageKey || loading || sessionStateHydrated) {
@@ -433,6 +480,17 @@ const WorkoutSession = () => {
       setWeightOverrides(storedWeights);
       setRestTimers(storedTimers);
       setActiveExerciseId(typeof parsed.activeExerciseId === "string" ? parsed.activeExerciseId : null);
+      const normalizedStatus: SessionStatus =
+        parsed.sessionStatus === "in_progress" || parsed.sessionStatus === "completed"
+          ? parsed.sessionStatus
+          : parsed.sessionStatus === "idle"
+            ? "idle"
+            : parsed.sessionStart
+              ? parsed.sessionEnd
+                ? "completed"
+                : "in_progress"
+              : "idle";
+      setSessionStatus(normalizedStatus);
     } catch (error) {
       console.error("Failed to restore workout session state", error);
       window.localStorage.removeItem(storageKey);
@@ -440,12 +498,6 @@ const WorkoutSession = () => {
       setSessionStateHydrated(true);
     }
   }, [storageKey, loading, sessionStateHydrated, exercises, id, userId]);
-
-  useEffect(() => {
-    if (!loading && sessionStateHydrated && sessionStart === null) {
-      setSessionStart(Date.now());
-    }
-  }, [loading, sessionStateHydrated, sessionStart]);
 
   useEffect(() => {
     if (!activeExerciseId) {
@@ -463,25 +515,12 @@ const WorkoutSession = () => {
   }, [activeExerciseId, exercises, progressMap]);
 
   useEffect(() => {
-    if (sessionStart === null || sessionEnd !== null) {
-      return;
-    }
-    const interval = setInterval(() => {
-      setSessionElapsed(Math.floor((Date.now() - sessionStart) / 1000));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [sessionStart, sessionEnd]);
-
-  useEffect(() => {
     if (typeof document === "undefined") {
       return;
     }
     const handleVisibilityChange = () => {
       if (document.visibilityState !== "visible") {
         return;
-      }
-      if (sessionStart !== null && sessionEnd === null) {
-        setSessionElapsed(Math.floor((Date.now() - sessionStart) / 1000));
       }
       const now = Date.now();
       const diff = now - restTickRef.current;
@@ -493,7 +532,7 @@ const WorkoutSession = () => {
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [applyRestTimerDelta, sessionEnd, sessionStart]);
+  }, [applyRestTimerDelta]);
 
   useEffect(() => {
     restTickRef.current = Date.now();
@@ -512,6 +551,17 @@ const WorkoutSession = () => {
   }, [applyRestTimerDelta]);
 
   useEffect(() => {
+    if (!sessionStateHydrated) {
+      return;
+    }
+    syncTimer({
+      status: sessionStatus,
+      start: sessionStart,
+      end: sessionEnd,
+    });
+  }, [sessionStateHydrated, sessionStatus, sessionStart, sessionEnd, syncTimer]);
+
+  useEffect(() => {
     if (
       !storageKey ||
       !sessionStateHydrated ||
@@ -524,9 +574,11 @@ const WorkoutSession = () => {
     const payload: PersistedSessionState = {
       version: SESSION_STORAGE_VERSION,
       workoutId: id ?? "",
+      workoutName: workout?.name ?? null,
       userId: userId ?? "",
       sessionStart,
       sessionEnd,
+      sessionStatus,
       sessionVolume,
       progressMap,
       weightOverrides,
@@ -538,13 +590,14 @@ const WorkoutSession = () => {
     try {
       window.localStorage.setItem(storageKey, JSON.stringify(payload));
     } catch (error) {
-      console.warn("Nao foi possivel salvar o treino em andamento", error);
+      console.warn("Não foi possível salvar o treino em andamento", error);
     }
   }, [
     storageKey,
     sessionStateHydrated,
     sessionStart,
     sessionEnd,
+    sessionStatus,
     sessionVolume,
     progressMap,
     weightOverrides,
@@ -552,6 +605,7 @@ const WorkoutSession = () => {
     activeExerciseId,
     id,
     userId,
+    workout?.name,
   ]);
 
   const totalSets = useMemo(
@@ -578,28 +632,24 @@ const WorkoutSession = () => {
   const nextExercise = pendingExercises[0] ?? null;
 
   const activeExercise = useMemo(() => {
+    if (sessionStatus !== "in_progress") {
+      return null;
+    }
     if (!activeExerciseId) {
       return nextExercise;
     }
     return exercises.find((exercise) => exercise.id === activeExerciseId) ?? nextExercise;
-  }, [activeExerciseId, exercises, nextExercise]);
+  }, [activeExerciseId, exercises, nextExercise, sessionStatus]);
 
-  const selectValue = activeExerciseId ?? nextExercise?.id ?? "__auto__";
+  const focusExerciseId =
+    sessionStatus === "in_progress" ? activeExercise?.id ?? nextExercise?.id ?? null : null;
+
+  const selectValue =
+    sessionStatus === "in_progress" ? activeExerciseId ?? nextExercise?.id ?? "__auto__" : "__auto__";
 
   const workoutFinished = exercises.length > 0 && !nextExercise;
 
-  useEffect(() => {
-    if (workoutFinished && sessionEnd === null && sessionStart !== null) {
-      setSessionEnd(Date.now());
-    }
-  }, [workoutFinished, sessionEnd, sessionStart]);
-
-  const displayElapsedSeconds =
-    sessionStart === null
-      ? 0
-      : sessionEnd !== null
-        ? Math.floor((sessionEnd - sessionStart) / 1000)
-        : sessionElapsed;
+  const displayElapsedSeconds = sessionStatus === "idle" ? 0 : timerElapsed;
 
   const completedExercises = useMemo(
     () => exercises.filter((exercise) => (progressMap[exercise.id] ?? 0) >= exercise.sets).length,
@@ -610,7 +660,13 @@ const WorkoutSession = () => {
   const summaryDurationLabel = formatDurationLabel(displayElapsedSeconds);
   const pendingSets = Math.max(0, totalSets - completedSets);
   const incompleteExercises = Math.max(0, exercises.length - completedExercises);
-  const canFinishWorkout = exercises.length > 0;
+  const canFinishWorkout = exercises.length > 0 && sessionStatus !== "idle";
+  const totalExercises = exercises.length;
+  const remainingExercises = Math.max(0, totalExercises - completedExercises);
+  const headerProgressLabel =
+    totalExercises > 0
+      ? `${completedExercises}/${totalExercises} concluídos (${remainingExercises} restantes)`
+      : "Nenhum exercício cadastrado";
 
   const resolveWeight = useCallback(
     (exercise: SessionExercise) => {
@@ -623,6 +679,51 @@ const WorkoutSession = () => {
     [weightOverrides],
   );
 
+  const persistExerciseWeight = useCallback(
+    async (exerciseId: string, nextWeight: number, previousWeight: number) => {
+      if (!Number.isFinite(nextWeight) || Math.abs(nextWeight - previousWeight) < 0.01) {
+        return;
+      }
+      try {
+        const { error } = await supabase.from("exercises").update({ weight: nextWeight }).eq("id", exerciseId);
+        if (error) {
+          console.warn("Não foi possível atualizar a carga do exercício", error);
+          return;
+        }
+        setExercises((current) =>
+          current.map((exercise) => (exercise.id === exerciseId ? { ...exercise, weight: nextWeight } : exercise)),
+        );
+      } catch (error) {
+        console.warn("Erro inesperado ao salvar a carga do exercício", error);
+      }
+    },
+    [setExercises],
+  );
+
+  const persistPendingWeightOverrides = useCallback(async () => {
+    const tasks = exercises
+      .map((exercise) => {
+        const override = weightOverrides[exercise.id];
+        if (typeof override !== "number" || Number.isNaN(override)) {
+          return null;
+        }
+        const normalized = Math.max(0, Math.round(override * 100) / 100);
+        if (Math.abs(normalized - exercise.weight) < 0.01) {
+          return null;
+        }
+        return persistExerciseWeight(exercise.id, normalized, exercise.weight);
+      })
+      .filter((entry): entry is Promise<void> => Boolean(entry));
+    if (tasks.length === 0) {
+      return;
+    }
+    try {
+      await Promise.all(tasks);
+    } catch (error) {
+      console.warn("Falha ao salvar as cargas atualizadas antes de finalizar o treino", error);
+    }
+  }, [exercises, weightOverrides, persistExerciseWeight]);
+
   const clearPersistedSession = useCallback(() => {
     if (!storageKey || typeof window === "undefined") {
       return;
@@ -630,7 +731,7 @@ const WorkoutSession = () => {
     try {
       window.localStorage.removeItem(storageKey);
     } catch (error) {
-      console.warn("Nao foi possivel limpar o estado do treino", error);
+      console.warn("Não foi possível limpar o estado do treino", error);
     }
   }, [storageKey]);
 
@@ -661,40 +762,18 @@ const WorkoutSession = () => {
     });
   };
 
-  const handleAdjustRest = (exerciseId: string, delta: number, fallback: number) => {
-    setRestTimers((previous) => {
-      const current = previous[exerciseId] ?? createRestTimer(fallback);
-      const duration = Math.max(10, current.duration + delta);
-      const remaining = current.active ? Math.min(duration, current.remaining) : duration;
-      return {
-        ...previous,
-        [exerciseId]: {
-          ...current,
-          duration,
-          remaining,
-        },
-      };
-    });
-  };
-
-  const handleRestartRest = (exerciseId: string, fallback: number) => {
-    setRestTimers((previous) => {
-      const current = previous[exerciseId] ?? createRestTimer(fallback);
-      const duration = Math.max(10, current.duration || fallback);
-      return {
-        ...previous,
-        [exerciseId]: {
-          duration,
-          remaining: duration,
-          active: true,
-        },
-      };
-    });
-  };
-
   const handleCompleteSet = async (exerciseId: string) => {
     const exercise = exercises.find((item) => item.id === exerciseId);
     if (!exercise) {
+      return;
+    }
+
+    if (sessionStatus !== "in_progress") {
+      toast({
+        title: "Comece o treino",
+        description: "Use o botão \"Iniciar treino\" antes de registrar as séries.",
+        variant: "destructive",
+      });
       return;
     }
 
@@ -755,6 +834,7 @@ const WorkoutSession = () => {
       return;
     }
 
+    void persistExerciseWeight(exercise.id, currentWeight, exercise.weight);
     setSessionVolume((previous) => previous + currentWeight * repsLogged);
 
     if (nextCount < exercise.sets) {
@@ -802,26 +882,72 @@ const WorkoutSession = () => {
     }
   };
 
-  const finalizeWorkout = () => {
+  const handleStartWorkout = () => {
+    if (sessionStatus !== "idle" || exercises.length === 0) {
+      return;
+    }
+    const startAt = Date.now();
+    setSessionStart(startAt);
+    setSessionEnd(null);
+    setSessionStatus("in_progress");
+    startTimer(startAt);
+  };
+
+  const finalizeWorkout = useCallback(async () => {
+    await persistPendingWeightOverrides();
+    const finalEnd = sessionEnd ?? Date.now();
+    setSessionStatus("completed");
+    setSessionEnd(finalEnd);
+    finishTimer(finalEnd);
     clearPersistedSession();
     toast({
       title: "Treino finalizado!",
       description: `Duracao ${summaryDurationLabel} - Volume ${summaryVolumeLabel}`,
     });
     navigate("/dashboard");
-  };
+  }, [
+    persistPendingWeightOverrides,
+    sessionEnd,
+    finishTimer,
+    clearPersistedSession,
+    toast,
+    summaryDurationLabel,
+    summaryVolumeLabel,
+    navigate,
+    setSessionStatus,
+  ]);
 
   const handleFinishWorkoutRequest = () => {
+    if (sessionStatus === "idle") {
+      toast({
+        title: "Comece o treino",
+        description: 'Pressione "Iniciar treino" antes de finalizar.',
+        variant: "destructive",
+      });
+      return;
+    }
     if (!workoutFinished) {
       setConfirmFinishOpen(true);
       return;
     }
-    finalizeWorkout();
+    void finalizeWorkout();
   };
 
   const handleForceFinish = () => {
     setConfirmFinishOpen(false);
-    finalizeWorkout();
+    void finalizeWorkout();
+  };
+
+  const handleConfirmNavigationExit = () => {
+    setExitPromptOpen(false);
+    const next = pendingNavigation;
+    setPendingNavigation(null);
+    next?.();
+  };
+
+  const handleCancelNavigationExit = () => {
+    setExitPromptOpen(false);
+    setPendingNavigation(null);
   };
 
   if (loading) {
@@ -834,8 +960,8 @@ const WorkoutSession = () => {
 
   return (
     <div className="min-h-screen gradient-dark">
-      <header className="border-b border-border bg-card/50 backdrop-blur">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+      <header className="sticky top-0 z-40 border-b border-border bg-card/60 backdrop-blur">
+        <div className="container mx-auto flex flex-wrap items-start justify-between gap-4 px-4 py-4">
           <div className="flex items-center gap-3">
             <Button variant="ghost" size="icon" onClick={() => navigate(`/workout/${id}`)}>
               <ArrowLeft className="w-5 h-5" />
@@ -854,19 +980,32 @@ const WorkoutSession = () => {
               </div>
             </div>
           </div>
-          <div className="flex flex-col items-end gap-2 text-right">
-            <div className="flex items-center gap-2 font-mono text-sm text-muted-foreground">
-              <Timer className="w-4 h-4 text-primary" />
-              <span>{formatClock(displayElapsedSeconds)}</span>
+          <div className="flex w-full flex-col gap-2 text-left sm:w-auto sm:items-end sm:text-right">
+            <div className="flex flex-col items-start gap-1 font-mono text-sm text-muted-foreground sm:items-end">
+              <div className="flex flex-wrap items-center gap-2">
+                <Timer className="w-4 h-4 text-primary" />
+                <span>{formatClock(displayElapsedSeconds)}</span>
+              </div>
+              <span className="text-xs text-muted-foreground">{headerProgressLabel}</span>
             </div>
-            <Button
-              onClick={handleFinishWorkoutRequest}
-              disabled={!canFinishWorkout}
-              className="gradient-secondary shadow-glow-secondary disabled:opacity-60"
-            >
-              <CheckCircle2 className="w-4 h-4 mr-2" />
-              Finalizar treino
-            </Button>
+            {sessionStatus === "idle" ? (
+              <Button
+                className="w-full gradient-primary shadow-glow-primary disabled:opacity-60 sm:w-auto"
+                onClick={handleStartWorkout}
+                disabled={exercises.length === 0}
+              >
+                Iniciar treino
+              </Button>
+            ) : (
+              <Button
+                className="w-full gradient-secondary shadow-glow-secondary disabled:opacity-60 sm:w-auto"
+                onClick={handleFinishWorkoutRequest}
+                disabled={!canFinishWorkout}
+              >
+                <CheckCircle2 className="w-4 h-4 mr-2" />
+                Finalizar treino
+              </Button>
+            )}
           </div>
         </div>
       </header>
@@ -880,10 +1019,13 @@ const WorkoutSession = () => {
                 ? "Tudo concluído! Finalize o treino para registrar a sessão."
                 : exercises.length === 0
                   ? "Adicione exercícios ao treino para começar."
-                  : activeExercise
-                    ? `Você está trabalhando em ${activeExercise.name}. Troque o exercício em foco abaixo conforme a disponibilidade dos equipamentos.`
-                    : "Selecione um exercício para iniciar."}
-            </CardDescription>
+                  : sessionStatus === "idle"
+                    ? 'Pressione "Iniciar treino" para liberar os exercícios.'
+                    : activeExercise
+                      ? `Você está trabalhando em ${activeExercise.name}. Troque o exercício em foco abaixo conforme a disponibilidade dos equipamentos.`
+                      : "Selecione um exercício para iniciar."
+              }
+                        </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <Progress value={sessionPercentage} />
@@ -903,7 +1045,10 @@ const WorkoutSession = () => {
                   value={selectValue}
                   onValueChange={(value) => setActiveExerciseId(value === "__auto__" ? null : value)}
                 >
-                  <SelectTrigger className="w-full" disabled={pendingExercises.length === 0}>
+                  <SelectTrigger
+                    className="w-full"
+                    disabled={pendingExercises.length === 0 || sessionStatus !== "in_progress"}
+                  >
                     <SelectValue placeholder="Selecione o exercício que deseja executar" />
                   </SelectTrigger>
                   <SelectContent>
@@ -927,7 +1072,9 @@ const WorkoutSession = () => {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Escolha outro exercício caso o equipamento atual esteja ocupado.
+                  {sessionStatus === "idle"
+                    ? 'Inicie o treino para selecionar qual exercício deseja executar primeiro.'
+                    : "Escolha outro exercício caso o equipamento atual esteja ocupado."}
                 </p>
               </div>
             )}
@@ -957,7 +1104,9 @@ const WorkoutSession = () => {
               <div className="rounded-lg border border-border/60 bg-card/40 p-4 text-sm text-muted-foreground">
                 {exercises.length === 0
                   ? "Adicione exercícios ao treino para começar."
-                  : "Nenhum exercício pendente. Finalize o treino quando estiver pronto."}
+                  : sessionStatus === "idle"
+                    ? 'Inicie o treino para liberar a execução dos exercícios.'
+                    : "Nenhum exercício pendente. Finalize o treino quando estiver pronto."}
               </div>
             )}
           </CardContent>
@@ -1033,12 +1182,17 @@ const WorkoutSession = () => {
               const restDuration = restTimer?.duration ?? baseRest;
               const restRemaining = restTimer?.remaining ?? restDuration;
               const restActive = restTimer?.active ?? false;
-              const restStatus = restActive
-                ? restRemaining === 0
-                  ? "Descanso concluído"
-                  : "Descanso em andamento"
-                : "Pronto para próxima série";
-              const restCountdownLabel = formatClock(restRemaining);
+              const isCurrentExercise = focusExerciseId === exercise.id;
+              const restStatus =
+                sessionStatus !== "in_progress"
+                  ? "Aguardando início do treino"
+                  : restActive
+                    ? restRemaining === 0
+                      ? "Descanso concluído"
+                      : "Descanso em andamento"
+                    : "Pronto para próxima série";
+              const restCountdownLabel =
+                sessionStatus === "in_progress" ? formatClock(restRemaining) : formatClock(restDuration);
               const setDetails = Array.from({ length: exercise.sets }, (_, index) => {
                 const planEntry = exercise.set_plan[index];
                 const repsValue =
@@ -1050,7 +1204,7 @@ const WorkoutSession = () => {
                     ? planEntry.weight
                     : resolveWeight(exercise);
                 const status: "completed" | "active" | "pending" =
-                  index < completed ? "completed" : !finished && index === completed ? "active" : "pending";
+                  index < completed ? "completed" : isCurrentExercise && index === completed ? "active" : "pending";
                 return {
                   index: index + 1,
                   reps: repsValue,
@@ -1106,42 +1260,9 @@ const WorkoutSession = () => {
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-background/20 p-4 md:flex-row md:items-center md:justify-between">
-                      <div>
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Configurar descanso</p>
-                        <p className="text-sm text-muted-foreground">
-                          {restActive ? "Contagem ativa" : "Pronto"} · alvo atual {restDuration}s
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          onClick={() => handleAdjustRest(exercise.id, -15, exercise.rest_seconds)}
-                          disabled={finished}
-                        >
-                          <Minus className="w-4 h-4" />
-                        </Button>
-                        <span className="font-mono text-sm text-muted-foreground">{restDuration}s</span>
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          onClick={() => handleAdjustRest(exercise.id, 15, exercise.rest_seconds)}
-                          disabled={finished}
-                        >
-                          <Plus className="w-4 h-4" />
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleRestartRest(exercise.id, exercise.rest_seconds)}
-                          disabled={finished}
-                        >
-                          <RotateCcw className="w-4 h-4 mr-1" />
-                          Reiniciar
-                        </Button>
-                      </div>
-                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Descanso planejado: {baseRest}s - ajustes disponiveis apenas na edicao do treino.
+                    </p>
 
                     <Separator />
 
@@ -1263,6 +1384,20 @@ const WorkoutSession = () => {
           <AlertDialogFooter>
             <AlertDialogCancel>Continuar treino</AlertDialogCancel>
             <AlertDialogAction onClick={handleForceFinish}>Finalizar mesmo assim</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={exitPromptOpen} onOpenChange={(open) => !open && handleCancelNavigationExit()}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Você está no meio de um treino</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem certeza que deseja sair agora? Seu progresso pode não ser salvo.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleCancelNavigationExit}>Continuar treino</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmNavigationExit}>Sair mesmo assim</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

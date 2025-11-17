@@ -65,10 +65,11 @@ const Auth = () => {
         });
         setIsLogin(true);
       }
-    } catch (error: any) {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Verifique os dados e tente novamente.";
       toast({
         title: "Erro",
-        description: error.message,
+        description: message,
         variant: "destructive",
       });
     } finally {

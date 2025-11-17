@@ -94,10 +94,11 @@ const ExerciseDialog = ({ open, onOpenChange, workoutId, nextOrderIndex, exercis
       }
 
       onOpenChange(false);
-    } catch (error: any) {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Tente novamente em instantes.";
       toast({
         title: "Erro",
-        description: error.message,
+        description: message,
         variant: "destructive",
       });
     } finally {

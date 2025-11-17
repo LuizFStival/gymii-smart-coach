@@ -4,17 +4,19 @@ import { Badge } from "@/components/ui/badge";
 import { Edit, Trash2, Weight, Repeat, Timer } from "lucide-react";
 import { parseSetPlan } from "@/lib/training";
 
+type ExerciseCardExercise = {
+  id: string;
+  name: string;
+  sets: number;
+  reps: number;
+  weight: number;
+  rest_seconds: number;
+  set_plan?: unknown;
+};
+
 interface ExerciseCardProps {
-  exercise: {
-    id: string;
-    name: string;
-    sets: number;
-    reps: number;
-    weight: number;
-    rest_seconds: number;
-    set_plan?: unknown;
-  };
-  onEdit: (exercise: any) => void;
+  exercise: ExerciseCardExercise;
+  onEdit: (exercise: ExerciseCardExercise) => void;
   onDelete: (id: string) => void;
 }
 

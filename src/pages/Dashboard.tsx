@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { endOfWeek, startOfWeek } from "date-fns";
 import { supabase } from "@/integrations/supabase/client";
+import type { Tables } from "@/integrations/supabase/types";
+import type { User } from "@supabase/supabase-js";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -17,13 +20,19 @@ type DashboardWorkout = {
   exercisesCount: number;
 };
 
+type WorkoutLogSummary = Pick<Tables<"workout_logs">, "completed_at">;
+
 const Dashboard = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [workoutsCount, setWorkoutsCount] = useState(0);
   const [upcomingWorkouts, setUpcomingWorkouts] = useState<DashboardWorkout[]>([]);
   const [loading, setLoading] = useState(true);
+  const [weeklyStats, setWeeklyStats] = useState({
+    completedSessions: 0,
+    completionPercent: 0,
+  });
 
   const renderMuscleBadges = useCallback((value: string) => {
     const groups = muscleGroupsFromString(value);
@@ -48,6 +57,57 @@ const Dashboard = () => {
       return "--";
     }
   };
+
+  const calculateWeeklyStats = useCallback(
+    async (userId: string) => {
+      const weekStart = startOfWeek(new Date(), { weekStartsOn: 1 });
+      const weekEnd = endOfWeek(new Date(), { weekStartsOn: 1 });
+
+      const [
+        { data: logsData, error: logsError },
+        { data: profileData, error: profileError },
+      ] = await Promise.all([
+        supabase
+          .from("workout_logs")
+          .select("completed_at")
+          .eq("user_id", userId)
+          .gte("completed_at", weekStart.toISOString())
+          .lte("completed_at", weekEnd.toISOString()),
+        supabase.from("profiles").select("weekly_frequency").eq("id", userId).maybeSingle(),
+      ]);
+
+      if (profileError) {
+        console.warn("Não foi possível carregar a meta semanal", profileError);
+      }
+
+      if (logsError) {
+        console.error(logsError);
+        toast({
+          title: "Erro ao calcular indicadores",
+          description: "Não foi possível carregar os dados desta semana.",
+          variant: "destructive",
+        });
+        setWeeklyStats({ completedSessions: 0, completionPercent: 0 });
+        return;
+      }
+
+      const sessionKeys = new Set<string>();
+      (logsData as WorkoutLogSummary[] | null)?.forEach((log) => {
+        if (!log?.completed_at) return;
+        sessionKeys.add(log.completed_at.slice(0, 10));
+      });
+
+      const weeklyGoal = profileData?.weekly_frequency ?? 0;
+      const completionPercent =
+        weeklyGoal > 0 ? Math.min(100, Math.round((sessionKeys.size / weeklyGoal) * 100)) : sessionKeys.size > 0 ? 100 : 0;
+
+      setWeeklyStats({
+        completedSessions: sessionKeys.size,
+        completionPercent,
+      });
+    },
+    [toast],
+  );
 
   const fetchDashboardData = useCallback(
     async (userId: string) => {
@@ -110,8 +170,9 @@ const Dashboard = () => {
       }));
 
       setUpcomingWorkouts(enhanced);
+      await calculateWeeklyStats(userId);
     },
-    [toast],
+    [calculateWeeklyStats, toast],
   );
 
   useEffect(() => {
@@ -175,19 +236,20 @@ const Dashboard = () => {
   }
 
   const upcomingList = upcomingWorkouts.slice(0, 4);
+  const progressLabel = weeklyStats.completionPercent > 0 ? `+${weeklyStats.completionPercent}%` : "0%";
 
   return (
     <div className="min-h-screen gradient-dark">
       {/* Header */}
       <header className="border-b border-border bg-card/50 backdrop-blur">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+        <div className="container mx-auto flex flex-wrap items-center justify-between gap-3 px-4 py-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full gradient-primary flex items-center justify-center shadow-glow-primary">
               <Dumbbell className="w-5 h-5 text-primary-foreground" />
             </div>
             <h1 className="text-2xl font-bold">GYMii</h1>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 justify-start sm:w-auto sm:justify-end">
             <Button
               variant="ghost"
               size="icon"
@@ -217,7 +279,7 @@ const Dashboard = () => {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           <Card className="shadow-card border-border/50">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">Treinos Criados</CardTitle>
@@ -234,7 +296,7 @@ const Dashboard = () => {
               <TrendingUp className="w-4 h-4 text-secondary" />
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold">+0%</div>
+              <div className="text-3xl font-bold">{progressLabel}</div>
               <p className="text-xs text-muted-foreground mt-1">Esta semana</p>
             </CardContent>
           </Card>
@@ -245,7 +307,7 @@ const Dashboard = () => {
               <Calendar className="w-4 h-4 text-accent" />
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold">0x</div>
+              <div className="text-3xl font-bold">{weeklyStats.completedSessions}x</div>
               <p className="text-xs text-muted-foreground mt-1">Esta semana</p>
             </CardContent>
           </Card>
@@ -254,7 +316,7 @@ const Dashboard = () => {
         {/* Upcoming Workouts */}
         <Card className="shadow-card border-border/50">
           <CardHeader className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle className="text-lg font-semibold">Próximos treinos</CardTitle>
               <Button
                 variant="ghost"

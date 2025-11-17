@@ -70,7 +70,7 @@ const WorkoutDialog = ({ open, onOpenChange, workout }: WorkoutDialogProps) => {
     if (selectedGroups.length === 0) {
       toast({
         title: "Selecione ao menos um grupo",
-        description: "Escolha uma ou mais areas para organizar o treino.",
+        description: "Escolha uma ou mais áreas para organizar o treino.",
         variant: "destructive",
       });
       return;
@@ -82,7 +82,7 @@ const WorkoutDialog = ({ open, onOpenChange, workout }: WorkoutDialogProps) => {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      if (!session) throw new Error("Nao autenticado");
+      if (!session) throw new Error("Não autenticado");
 
       const muscleGroupValue = stringifyMuscleGroups(selectedGroups);
 
@@ -114,10 +114,11 @@ const WorkoutDialog = ({ open, onOpenChange, workout }: WorkoutDialogProps) => {
       }
 
       onOpenChange(false);
-    } catch (error: any) {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Não foi possível salvar o treino.";
       toast({
         title: "Erro",
-        description: error.message,
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -131,7 +132,7 @@ const WorkoutDialog = ({ open, onOpenChange, workout }: WorkoutDialogProps) => {
         <DialogHeader>
           <DialogTitle>{workout ? "Editar treino" : "Novo treino"}</DialogTitle>
           <DialogDescription>
-            {workout ? "Atualize as informacoes do treino" : "Crie um novo treino personalizado"}
+            {workout ? "Atualize as informações do treino" : "Crie um novo treino personalizado"}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -139,7 +140,7 @@ const WorkoutDialog = ({ open, onOpenChange, workout }: WorkoutDialogProps) => {
             <Label htmlFor="name">Nome do treino</Label>
             <Input
               id="name"
-              placeholder="Ex: Treino 2 (Aerobico, Pernas)"
+              placeholder="Ex: Treino 2 (Aeróbico, Pernas)"
               value={name}
               onChange={(e) => setName(e.target.value)}
               required

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import ExerciseDialog from "@/components/ExerciseDialog";
 import ExerciseCard from "@/components/ExerciseCard";
 import { formatMuscleGroupLabel, muscleGroupsFromString } from "@/lib/training";
+import type { Tables } from "@/integrations/supabase/types";
 
 interface Exercise {
   id: string;
@@ -21,29 +22,24 @@ interface Exercise {
   set_plan?: unknown;
 }
 
+type WorkoutRow = Tables<"workouts">;
+
 const WorkoutDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [workout, setWorkout] = useState<any>(null);
+  const [workout, setWorkout] = useState<WorkoutRow | null>(null);
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingExercise, setEditingExercise] = useState<Exercise | null>(null);
 
-  useEffect(() => {
-    const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        navigate("/auth");
-        return;
-      }
-      fetchWorkoutData();
-    };
-    checkAuth();
-  }, [id, navigate]);
+  const fetchWorkoutData = useCallback(async () => {
+    if (!id) {
+      navigate("/workouts");
+      return;
+    }
 
-  const fetchWorkoutData = async () => {
     setLoading(true);
     
     const { data: workoutData, error: workoutError } = await supabase
@@ -81,7 +77,19 @@ const WorkoutDetail = () => {
     }
 
     setLoading(false);
-  };
+  }, [id, navigate, toast]);
+
+  useEffect(() => {
+    const checkAuth = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        navigate("/auth");
+        return;
+      }
+      fetchWorkoutData();
+    };
+    checkAuth();
+  }, [fetchWorkoutData, navigate]);
 
   const handleEdit = (exercise: Exercise) => {
     setEditingExercise(exercise);
